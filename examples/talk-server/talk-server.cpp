@@ -21,6 +21,7 @@ struct whisper_params {
     int32_t n_threads  = std::min(4, (int32_t) std::thread::hardware_concurrency());
     int32_t voice_ms   = 30000;
     int32_t audio_ms   = 60000;
+    int32_t detect_ms  = 2000;
     int32_t capture_id = -1;
     int32_t max_tokens = 32;
     int32_t audio_ctx  = 0;
@@ -54,6 +55,7 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-t"   || arg == "--threads")       { params.n_threads     = std::stoi(argv[++i]); }
         else if (arg == "-vms" || arg == "--voice-ms")      { params.voice_ms      = std::stoi(argv[++i]); }
         else if (arg == "-ams" || arg == "--audio-ms")      { params.audio_ms      = std::stoi(argv[++i]); }
+        else if (arg == "-dms" || arg == "--detect-ms")     { params.detect_ms     = std::stoi(argv[++i]); }
         else if (arg == "-c"   || arg == "--capture")       { params.capture_id    = std::stoi(argv[++i]); }
         else if (arg == "-mt"  || arg == "--max-tokens")    { params.max_tokens    = std::stoi(argv[++i]); }
         else if (arg == "-ac"  || arg == "--audio-ctx")     { params.audio_ctx     = std::stoi(argv[++i]); }
@@ -254,7 +256,7 @@ int main(int argc, char ** argv) {
 
         {
             // Check last 2s of audio to detect speech.
-            audio.get(2000, pcmf32_cur);
+            audio.get(params.detect_ms, pcmf32_cur);
             if (::vad_simple(pcmf32_cur, WHISPER_SAMPLE_RATE, 1250, params.vad_thold, params.freq_thold, params.print_energy)) {
                 fprintf(stdout, "%s: Speech detected! Transcribing...\n", __func__);
 
