@@ -36,7 +36,7 @@ struct whisper_params {
 
     std::string language  = "en";
     std::string model_wsp = "models/ggml-base.en.bin";
-    std::string url_server = "http://localhost:8888/speech/";
+    std::string url_server = "http://localhost:8888/speech";
 };
 
 
