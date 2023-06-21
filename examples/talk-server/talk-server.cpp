@@ -286,6 +286,8 @@ int main(int argc, char ** argv) {
                 // Remove leading and trailing whitespace.
                 text_heard = std::regex_replace(text_heard, std::regex("^\\s+"), "");
                 text_heard = std::regex_replace(text_heard, std::regex("\\s+$"), "");
+                // Remove single punctuation.
+                text_heard = std::regex_replace(text_heard, std::regex("^[\\.,\\?!\\:\\'\\-]$"), "");
 
                 // Skip empty lines or verbose the result.
                 if (text_heard.empty()) {
