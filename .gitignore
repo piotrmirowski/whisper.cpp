@@ -22,6 +22,7 @@ build-sanitize-thread/
 /command
 /talk
 /talk-llama
+/talk-server
 /bench
 /quantize
 
