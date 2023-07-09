@@ -163,6 +163,32 @@ std::string transcribe(whisper_context * ctx,
 }
 
 
+std::string cleanup_text(const std::string & text_heard) {
+    std::string clean_text(text_heard);
+
+    // Remove text between brackets using regex.
+    {
+        std::regex re("\\[.*?\\]");
+        clean_text = std::regex_replace(clean_text, re, "");
+    }
+    // Remove text between brackets using regex.
+    {
+        std::regex re("\\(.*?\\)");
+        clean_text = std::regex_replace(clean_text, re, "");
+    }
+    // Remove all characters, except for letters, numbers, punctuation and ':', '\'', '-', ' '.
+    clean_text = std::regex_replace(
+        clean_text, std::regex("[^a-zA-Z0-9\\.,\\?!\\s\\:\\'\\-]"), "");
+    // Remove leading and trailing whitespace.
+    clean_text = std::regex_replace(clean_text, std::regex("^\\s+"), "");
+    clean_text = std::regex_replace(clean_text, std::regex("\\s+$"), "");
+    // Remove single punctuation.
+    clean_text = std::regex_replace(clean_text, std::regex("^[\\.,\\?!\\:\\'\\-]$"), "");
+
+    return clean_text;
+}
+
+
 int post_text(const std::string & text, const std::string & url_server) {
     CURL *curl;
     CURLcode res;
@@ -251,7 +277,6 @@ int main(int argc, char ** argv) {
         }
         // Small delay.
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
         int64_t t_ms = 0;
 
         {
@@ -269,25 +294,8 @@ int main(int argc, char ** argv) {
                 text_heard = ::trim(::transcribe(ctx_wsp, params, pcmf32_cur, prob0, t_ms));
                 fprintf(stdout, "%s: Transcribed %d frames.\n", __func__, (int) pcmf32_cur.size());
 
-                // Remove text between brackets using regex.
-                {
-                    std::regex re("\\[.*?\\]");
-                    text_heard = std::regex_replace(text_heard, re, "");
-                }
-                // Remove text between brackets using regex.
-                {
-                    std::regex re("\\(.*?\\)");
-                    text_heard = std::regex_replace(text_heard, re, "");
-                }
-                // Remove all characters, except for letters, numbers, punctuation and ':', '\'', '-', ' '.
-                text_heard = std::regex_replace(text_heard, std::regex("[^a-zA-Z0-9\\.,\\?!\\s\\:\\'\\-]"), "");
-                // Take first line (drop this one)
-                // text_heard = text_heard.substr(0, text_heard.find_first_of('\n'));
-                // Remove leading and trailing whitespace.
-                text_heard = std::regex_replace(text_heard, std::regex("^\\s+"), "");
-                text_heard = std::regex_replace(text_heard, std::regex("\\s+$"), "");
-                // Remove single punctuation.
-                text_heard = std::regex_replace(text_heard, std::regex("^[\\.,\\?!\\:\\'\\-]$"), "");
+                // Clean up results.
+                text_heard = ::cleanup_text(text_heard);
 
                 // Skip empty lines or verbose the result.
                 if (text_heard.empty()) {
