@@ -339,11 +339,9 @@ int main(int argc, char ** argv) {
 
                 // Copy last voice_ms audio context without clearing audio buffer.
                 audio.get(params.voice_ms, pcmf32_cur);
-                // audio.clear();
 
                 // Transcribe audio to text_partial using Whisper.
                 std::string text_partial = ::trim(::transcribe(ctx_wsp, params, pcmf32_cur, prob0, t_ms));
-                // fprintf(stdout, "%s: Transcribed %d frames.\n", __func__, (int) pcmf32_cur.size());
 
                 // Clean up results.
                 text_partial = ::cleanup_text(text_partial);
@@ -365,6 +363,7 @@ int main(int argc, char ** argv) {
 
                 if (text_partial.size() > params.max_chars) {
                     // Force send the line to server as final recognition.
+                    audio.clear();
                     last_text_partial = "";
                     vad_thold = params.vad_thold;
                     post_text(text_partial, params.url_final);
