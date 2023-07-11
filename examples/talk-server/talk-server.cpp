@@ -22,11 +22,15 @@ struct whisper_params {
     int32_t voice_ms   = 30000;
     int32_t audio_ms   = 60000;
     int32_t detect_ms  = 2000;
+    int32_t last_ms    = 1000;
     int32_t capture_id = -1;
     int32_t max_tokens = 32;
     int32_t audio_ctx  = 0;
+    int32_t n_chars_hi = 50;
+    int32_t max_chars  = 100;
 
     float vad_thold    = 0.6f;
+    float vad_hi_thold = 0.8f;
     float freq_thold   = 100.0f;
 
     bool speed_up      = false;
@@ -35,9 +39,10 @@ struct whisper_params {
     bool print_energy  = false;
     bool no_timestamps = true;
 
-    std::string language  = "en";
-    std::string model_wsp = "models/ggml-base.en.bin";
-    std::string url_server = "http://localhost:8888/speech";
+    std::string language    = "en";
+    std::string model_wsp   = "models/ggml-base.en.bin";
+    std::string url_final   = "http://localhost:8888/speech";
+    std::string url_partial = "http://localhost:8888/partialspeech";
 };
 
 
@@ -56,10 +61,14 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-vms" || arg == "--voice-ms")      { params.voice_ms      = std::stoi(argv[++i]); }
         else if (arg == "-ams" || arg == "--audio-ms")      { params.audio_ms      = std::stoi(argv[++i]); }
         else if (arg == "-dms" || arg == "--detect-ms")     { params.detect_ms     = std::stoi(argv[++i]); }
+        else if (arg == "-lms" || arg == "--last-ms")       { params.last_ms       = std::stoi(argv[++i]); }
         else if (arg == "-c"   || arg == "--capture")       { params.capture_id    = std::stoi(argv[++i]); }
         else if (arg == "-mt"  || arg == "--max-tokens")    { params.max_tokens    = std::stoi(argv[++i]); }
         else if (arg == "-ac"  || arg == "--audio-ctx")     { params.audio_ctx     = std::stoi(argv[++i]); }
+        else if (arg == "-nhi" || arg == "--n-chars-hi")    { params.n_chars_hi    = std::stoi(argv[++i]); }
+        else if (arg == "-max" || arg == "--max-chars")     { params.max_chars     = std::stoi(argv[++i]); }
         else if (arg == "-vth" || arg == "--vad-thold")     { params.vad_thold     = std::stof(argv[++i]); }
+        else if (arg == "-vhi" || arg == "--vad-hi-thold")  { params.vad_hi_thold  = std::stof(argv[++i]); }
         else if (arg == "-fth" || arg == "--freq-thold")    { params.freq_thold    = std::stof(argv[++i]); }
         else if (arg == "-su"  || arg == "--speed-up")      { params.speed_up      = true; }
         else if (arg == "-tr"  || arg == "--translate")     { params.translate     = true; }
@@ -67,7 +76,8 @@ bool whisper_params_parse(int argc, char ** argv, whisper_params & params) {
         else if (arg == "-pe"  || arg == "--print-energy")  { params.print_energy  = true; }
         else if (arg == "-l"   || arg == "--language")      { params.language      = argv[++i]; }
         else if (arg == "-mw"  || arg == "--model-whisper") { params.model_wsp     = argv[++i]; }
-        else if (arg == "-u"   || arg == "--url_server")    { params.url_server    = argv[++i]; }
+        else if (arg == "-uf"  || arg == "--url-final")     { params.url_final     = argv[++i]; }
+        else if (arg == "-up"  || arg == "--url-partial")   { params.url_partial   = argv[++i]; }
         else {
             fprintf(stderr, "error: unknown argument: %s\n", arg.c_str());
             whisper_print_usage(argc, argv, params);
@@ -84,22 +94,28 @@ void whisper_print_usage(int argc, char ** argv, const whisper_params & params) 
     fprintf(stderr, "usage: %s [options]\n", argv[0]);
     fprintf(stderr, "\n");
     fprintf(stderr, "options:\n");
-    fprintf(stderr, "  -h,       --help           [default] show this help message and exit\n");
-    fprintf(stderr, "  -t N,     --threads N      [%-7d] number of threads to use during computation\n", params.n_threads);
-    fprintf(stderr, "  -vms N,   --voice-ms N     [%-7d] voice duration in milliseconds\n",              params.voice_ms);
-    fprintf(stderr, "  -ams N,   --audio-ms N     [%-7d] SDL audio buffer in milliseconds\n",              params.voice_ms);
-    fprintf(stderr, "  -c ID,    --capture ID     [%-7d] capture device ID\n",                           params.capture_id);
-    fprintf(stderr, "  -mt N,    --max-tokens N   [%-7d] maximum number of tokens per audio chunk\n",    params.max_tokens);
-    fprintf(stderr, "  -ac N,    --audio-ctx N    [%-7d] audio context size (0 - all)\n",                params.audio_ctx);
-    fprintf(stderr, "  -vth N,   --vad-thold N    [%-7.2f] voice activity detection threshold\n",        params.vad_thold);
-    fprintf(stderr, "  -fth N,   --freq-thold N   [%-7.2f] high-pass frequency cutoff\n",                params.freq_thold);
-    fprintf(stderr, "  -su,      --speed-up       [%-7s] speed up audio by x2 (reduced accuracy)\n",     params.speed_up ? "true" : "false");
-    fprintf(stderr, "  -tr,      --translate      [%-7s] translate from source language to english\n",   params.translate ? "true" : "false");
-    fprintf(stderr, "  -ps,      --print-special  [%-7s] print special tokens\n",                        params.print_special ? "true" : "false");
-    fprintf(stderr, "  -pe,      --print-energy   [%-7s] print sound energy (for debugging)\n",          params.print_energy ? "true" : "false");
-    fprintf(stderr, "  -l LANG,  --language LANG  [%-7s] spoken language\n",                             params.language.c_str());
-    fprintf(stderr, "  -mw FILE, --model-whisper  [%-7s] whisper model file\n",                          params.model_wsp.c_str());
-    fprintf(stderr, "  -u URL,   --url-server URL [%-7s] URL of server\n",                               params.url_server.c_str());
+    fprintf(stderr, "  -h,       --help            [default] show this help message and exit\n");
+    fprintf(stderr, "  -t N,     --threads N       [%-7d] number of threads to use during computation\n",  params.n_threads);
+    fprintf(stderr, "  -vms N,   --voice-ms N      [%-7d] voice duration in milliseconds\n",               params.voice_ms);
+    fprintf(stderr, "  -ams N,   --audio-ms N      [%-7d] SDL audio buffer in milliseconds\n",             params.audio_ms);
+    fprintf(stderr, "  -dms N,   --detect-ms N     [%-7d] detect part of audio buffer in milliseconds\n",  params.detect_ms);
+    fprintf(stderr, "  -lms N,   --last-ms N       [%-7d] last part of audio buffer in milliseconds\n",    params.last_ms);
+    fprintf(stderr, "  -c ID,    --capture ID      [%-7d] capture device ID\n",                            params.capture_id);
+    fprintf(stderr, "  -mt N,    --max-tokens N    [%-7d] maximum number of tokens per audio chunk\n",     params.max_tokens);
+    fprintf(stderr, "  -ac N,    --audio-ctx N     [%-7d] audio context size (0 - all)\n",                 params.audio_ctx);
+    fprintf(stderr, "  -nhi N,   --n-chars-hi N    [%-7d] number of chars when threshold rises to high\n", params.n_chars_hi);
+    fprintf(stderr, "  -nax N,   --max-chars N     [%-7d] max number of chars for accepting a sentence\n", params.max_chars);
+    fprintf(stderr, "  -vth N,   --vad-thold N     [%-7.2f] final voice activity detection threshold\n",   params.vad_thold);
+    fprintf(stderr, "  -vhi N,   --vad-hi-thold N  [%-7.2f] partial voice activity detection threshold\n", params.vad_hi_thold);
+    fprintf(stderr, "  -fth N,   --freq-thold N    [%-7.2f] high-pass frequency cutoff\n",                 params.freq_thold);
+    fprintf(stderr, "  -su,      --speed-up        [%-7s] speed up audio by x2 (reduced accuracy)\n",      params.speed_up ? "true" : "false");
+    fprintf(stderr, "  -tr,      --translate       [%-7s] translate from source language to english\n",    params.translate ? "true" : "false");
+    fprintf(stderr, "  -ps,      --print-special   [%-7s] print special tokens\n",                         params.print_special ? "true" : "false");
+    fprintf(stderr, "  -pe,      --print-energy    [%-7s] print sound energy (for debugging)\n",           params.print_energy ? "true" : "false");
+    fprintf(stderr, "  -l LANG,  --language LANG   [%-7s] spoken language\n",                              params.language.c_str());
+    fprintf(stderr, "  -mw FILE, --model-whisper   [%-7s] whisper model file\n",                           params.model_wsp.c_str());
+    fprintf(stderr, "  -uf URL,  --url-final URL   [%-7s] URL of server for final recognition\n",          params.url_final.c_str());
+    fprintf(stderr, "  -up URL,  --url-partial URL [%-7s] URL of server for partial recognition\n",        params.url_partial.c_str());
     fprintf(stderr, "\n");
 }
 
@@ -216,23 +232,22 @@ int post_text(const std::string & text, const std::string & url_server) {
 
 
 int main(int argc, char ** argv) {
-    whisper_params params;
 
+    // Parse parameters and print usage.
+    whisper_params params;
     if (whisper_params_parse(argc, argv, params) == false) {
         return 1;
     }
-
     if (whisper_lang_id(params.language.c_str()) == -1) {
         fprintf(stderr, "error: unknown language '%s'\n", params.language.c_str());
         whisper_print_usage(argc, argv, params);
         exit(0);
     }
 
-    // whisper init
-
+    // Initialise Whisper.
     struct whisper_context * ctx_wsp = whisper_init_from_file(params.model_wsp.c_str());
 
-    // print some info about the processing
+    // Print some info about the processing.
     {
         fprintf(stderr, "\n");
         if (!whisper_is_multilingual(ctx_wsp)) {
@@ -252,20 +267,21 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "\n");
     }
 
-
-    // Init audio.
+    // Initialise audio.
     audio_async audio(params.audio_ms);
     if (!audio.init(params.capture_id, WHISPER_SAMPLE_RATE)) {
         fprintf(stderr, "%s: audio.init() failed!\n", __func__);
         return 1;
     }
     audio.resume();
-    fprintf(stdout, "%s: Initialised Whisper with sample rate %d.\n", __func__, WHISPER_SAMPLE_RATE);
+    fprintf(stdout, "%s: Initialised Whisper with sample rate %d Hz.\n", __func__, WHISPER_SAMPLE_RATE);
 
     bool is_running  = true;
     float prob0 = 0.0f;
 
     std::vector<float> pcmf32_cur;
+    std::string last_text_partial("");
+    float vad_thold = params.vad_thold;
 
     // Main loop.
     while (is_running) {
@@ -282,30 +298,81 @@ int main(int argc, char ** argv) {
         {
             // Check last 2s of audio to detect speech.
             audio.get(params.detect_ms, pcmf32_cur);
-            if (::vad_simple(pcmf32_cur, WHISPER_SAMPLE_RATE, 1250, params.vad_thold, params.freq_thold, params.print_energy)) {
+            if (::vad_simple(pcmf32_cur,
+                             WHISPER_SAMPLE_RATE,
+                             params.last_ms,
+                             vad_thold,
+                             params.freq_thold,
+                             params.print_energy)) {
                 fprintf(stdout, "%s: Speech detected! Transcribing...\n", __func__);
 
                 // Copy last voice_ms audio context and clear audio buffer.
                 audio.get(params.voice_ms, pcmf32_cur);
                 audio.clear();
 
-                // Transcribe audio to text_heard using Whisper.
-                std::string text_heard;
-                text_heard = ::trim(::transcribe(ctx_wsp, params, pcmf32_cur, prob0, t_ms));
+                // Transcribe audio to text_final using Whisper.
+                std::string text_final = ::trim(::transcribe(ctx_wsp, params, pcmf32_cur, prob0, t_ms));
                 fprintf(stdout, "%s: Transcribed %d frames.\n", __func__, (int) pcmf32_cur.size());
 
                 // Clean up results.
-                text_heard = ::cleanup_text(text_heard);
+                text_final = ::cleanup_text(text_final);
 
                 // Skip empty lines or verbose the result.
-                if (text_heard.empty()) {
+                if (text_final.empty()) {
                     fprintf(stdout, "%s: Heard nothing, skipping... (t = %d ms)\n", __func__, (int) t_ms);
                     continue;
                 }
-                fprintf(stdout, "%s: Heard '%s%s%s', (t = %d ms)\n", __func__, "\033[1m", text_heard.c_str(), "\033[0m", (int) t_ms);
+                fprintf(stdout, "%s: Final '%s%s%s', (t = %d ms)\n",
+                        __func__, "\033[1;31m", text_final.c_str(), "\033[0m", (int) t_ms);
 
-                // Send the line to server.
-                post_text(text_heard, params.url_server);
+                // Send the line to server as final recognition.
+                last_text_partial = "";
+                vad_thold = params.vad_thold;
+                post_text(text_final, params.url_final);
+
+            } else if (::vad_simple(pcmf32_cur,
+                                    WHISPER_SAMPLE_RATE,
+                                    params.last_ms,
+                                    params.vad_hi_thold,
+                                    params.freq_thold,
+                                    params.print_energy)) {
+
+                // Copy last voice_ms audio context without clearing audio buffer.
+                audio.get(params.voice_ms, pcmf32_cur);
+                // audio.clear();
+
+                // Transcribe audio to text_partial using Whisper.
+                std::string text_partial = ::trim(::transcribe(ctx_wsp, params, pcmf32_cur, prob0, t_ms));
+                // fprintf(stdout, "%s: Transcribed %d frames.\n", __func__, (int) pcmf32_cur.size());
+
+                // Clean up results.
+                text_partial = ::cleanup_text(text_partial);
+
+                // Skip empty lines or verbose the result.
+                if (text_partial.empty()) {
+                    continue;
+                }
+                if (text_partial == last_text_partial) {
+                    continue;
+                }
+                fprintf(stdout, "%s: Partial '%s%s%s', (t = %d ms)\n",
+                        __func__, "\033[1;34m", text_partial.c_str(), "\033[0m", (int) t_ms);
+
+                if (text_partial.size() > params.n_chars_hi) {
+                    vad_thold += (params.vad_hi_thold - vad_thold) / 2;
+                    fprintf(stdout, "Raiding vad_thold to %f\n", vad_thold);
+                }
+
+                if (text_partial.size() > params.max_chars) {
+                    // Force send the line to server as final recognition.
+                    last_text_partial = "";
+                    vad_thold = params.vad_thold;
+                    post_text(text_partial, params.url_final);
+                } else {
+                    // Send the line to server as partial recognition.
+                    last_text_partial = text_partial;
+                    post_text(text_partial, params.url_partial);
+                }
             }
         }
     }
