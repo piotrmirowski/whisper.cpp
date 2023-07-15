@@ -146,32 +146,34 @@ std::string transcribe(whisper_context * ctx,
     wparams.audio_ctx        = params.audio_ctx;
     wparams.speed_up         = params.speed_up;
 
+    // Run speech recognition on the audio context.
     if (whisper_full(ctx, wparams, pcmf32.data(), pcmf32.size()) != 0) {
         return "";
     }
 
+    // Extract the text, segment by segment, and compute likelihood.
     int prob_n = 0;
     std::string result;
-
     const int n_segments = whisper_full_n_segments(ctx);
     for (int i = 0; i < n_segments; ++i) {
-        const char * text = whisper_full_get_segment_text(ctx, i);
 
+        // Extract the text of the current segment.
+        const char * text = whisper_full_get_segment_text(ctx, i);
         result += text;
 
+        // Accumulate likelihood of the tokens.
         const int n_tokens = whisper_full_n_tokens(ctx, i);
         for (int j = 0; j < n_tokens; ++j) {
             const auto token = whisper_full_get_token_data(ctx, i, j);
-
             prob += token.p;
             ++prob_n;
         }
     }
-
+    // Normalise the likelihood of the whole detected sentence.
     if (prob_n > 0) {
         prob /= prob_n;
     }
-
+    // Time the Whisper recognition.
     const auto t_end = std::chrono::high_resolution_clock::now();
     t_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
 
@@ -222,12 +224,25 @@ int post_text(const std::string & text, const std::string & url_server) {
         if(res != CURLE_OK) {
             fprintf(stderr, "%s: curl_easy_perform() failed on %s: %s\n",
                     __func__, url_server.c_str(), curl_easy_strerror(res));
-        } else {
-            fprintf(stderr, "%s: Sent %s\n", __func__, request.c_str());
+        // } else {
+        //     fprintf(stderr, "%s: Sent %s\n", __func__, request.c_str());
         }
         curl_easy_cleanup(curl);
   }
   return 0;
+}
+
+
+void print_vector_to_file(const std::string & filename, const std::vector<float> & vec) {
+    std::ofstream out_file(filename);
+    if (!out_file) {
+        std::cerr << "Failed to open the file for writing." << std::endl;
+        return;
+    }
+    for (const auto &elem : vec) {
+        out_file << elem << std::endl;
+    }
+    out_file.close();
 }
 
 
@@ -278,8 +293,11 @@ int main(int argc, char ** argv) {
 
     bool is_running  = true;
     float prob0 = 0.0f;
+    int n_pcm_max = WHISPER_SAMPLE_RATE * params.voice_ms / 1000;
 
-    std::vector<float> pcmf32_cur;
+    std::vector<float> pcmf32_detect;
+    std::vector<float> pcmf32_buff;
+    std::vector<float> pcmf32_prev;
     std::string last_text_partial("");
     float vad_thold = params.vad_thold;
 
@@ -292,85 +310,96 @@ int main(int argc, char ** argv) {
             break;
         }
         // Small delay.
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         int64_t t_ms = 0;
 
         {
             // Check last 2s of audio to detect speech.
-            audio.get(params.detect_ms, pcmf32_cur);
-            if (::vad_simple(pcmf32_cur,
-                             WHISPER_SAMPLE_RATE,
-                             params.last_ms,
-                             vad_thold,
-                             params.freq_thold,
-                             params.print_energy)) {
-                fprintf(stdout, "%s: Speech detected! Transcribing...\n", __func__);
+            audio.get(params.detect_ms, pcmf32_detect);
+            bool detected_end = ::vad_simple(pcmf32_detect,
+                                             WHISPER_SAMPLE_RATE,
+                                             params.last_ms,
+                                             vad_thold,
+                                             params.freq_thold,
+                                             params.print_energy);
+            bool detected_pause = ::vad_simple(pcmf32_detect,
+                                               WHISPER_SAMPLE_RATE,
+                                               params.last_ms,
+                                               params.vad_hi_thold,
+                                               params.freq_thold,
+                                               params.print_energy);
+            if (detected_end || detected_pause) {
 
-                // Copy last voice_ms audio context and clear audio buffer.
-                audio.get(params.voice_ms, pcmf32_cur);
-                audio.clear();
+                // Copy last voice_ms audio context to pcmf32_buff.
+                audio.get(params.voice_ms, pcmf32_buff);
+                // Prepend any previous audio buffer.
+                if (pcmf32_buff.size() >= n_pcm_max) {
+                    pcmf32_prev.clear();
+                }
+                if (pcmf32_prev.size() > 0) {
+                    fprintf(stdout, "%s: Prepending audio buffer of %d %d %d with previous %d samples.\n",
+                            __func__, (int)pcmf32_buff.size(), n_pcm_max, (pcmf32_buff.size() >= n_pcm_max), (int)pcmf32_prev.size());
+                    pcmf32_buff.insert(pcmf32_buff.begin(), pcmf32_prev.begin(), pcmf32_prev.end());
+                }
 
-                // Transcribe audio to text_final using Whisper.
-                std::string text_final = ::trim(::transcribe(ctx_wsp, params, pcmf32_cur, prob0, t_ms));
-                fprintf(stdout, "%s: Transcribed %d frames.\n", __func__, (int) pcmf32_cur.size());
-
-                // Clean up results.
-                text_final = ::cleanup_text(text_final);
+                // Transcribe audio to text_heard using Whisper, then clean up results.
+                std::string text_heard = ::trim(::transcribe(ctx_wsp, params, pcmf32_buff, prob0, t_ms));
+                text_heard = ::cleanup_text(text_heard);
 
                 // Skip empty lines or verbose the result.
-                if (text_final.empty()) {
-                    fprintf(stdout, "%s: Heard nothing, skipping... (t = %d ms)\n", __func__, (int) t_ms);
+                if (text_heard.empty()) {
+                    fprintf(stdout, "%s: Heard nothing, skipping... (t = %d ms)\n", __func__, (int)t_ms);
                     continue;
                 }
-                fprintf(stdout, "%s: Final '%s%s%s', (t = %d ms)\n",
-                        __func__, "\033[1;31m", text_final.c_str(), "\033[0m", (int) t_ms);
-
-                // Send the line to server as final recognition.
-                last_text_partial = "";
-                vad_thold = params.vad_thold;
-                post_text(text_final, params.url_final);
-
-            } else if (::vad_simple(pcmf32_cur,
-                                    WHISPER_SAMPLE_RATE,
-                                    params.last_ms,
-                                    params.vad_hi_thold,
-                                    params.freq_thold,
-                                    params.print_energy)) {
-
-                // Copy last voice_ms audio context without clearing audio buffer.
-                audio.get(params.voice_ms, pcmf32_cur);
-
-                // Transcribe audio to text_partial using Whisper.
-                std::string text_partial = ::trim(::transcribe(ctx_wsp, params, pcmf32_cur, prob0, t_ms));
-
-                // Clean up results.
-                text_partial = ::cleanup_text(text_partial);
-
-                // Skip empty lines or verbose the result.
-                if (text_partial.empty()) {
+                if (text_heard == last_text_partial) {
                     continue;
                 }
-                if (text_partial == last_text_partial) {
-                    continue;
-                }
-                fprintf(stdout, "%s: Partial '%s%s%s', (t = %d ms)\n",
-                        __func__, "\033[1;34m", text_partial.c_str(), "\033[0m", (int) t_ms);
+                fprintf(stdout, "\n%s: Detected speech! (t = %d ms)\n", __func__, (int)t_ms);
 
-                if (text_partial.size() > params.n_chars_hi) {
+                // Partial detection: start loosening the detection threshold?
+                if (!detected_end) {
                     vad_thold += (params.vad_hi_thold - vad_thold) / 2;
-                    fprintf(stdout, "Raiding vad_thold to %f\n", vad_thold);
+                    fprintf(stdout, "%s: Raising vad_thold to %f\n", __func__, vad_thold);
                 }
 
-                if (text_partial.size() > params.max_chars) {
-                    // Force send the line to server as final recognition.
-                    audio.clear();
+                // End if the text is too long.
+                if (text_heard.size() > params.max_chars) {
+                    fprintf(stdout, "%s: Cutting after %d chars\n", __func__, (int)text_heard.size());
+                }
+                detected_end = detected_end || (text_heard.size() > params.max_chars);
+
+                if (detected_end) {
+                    fprintf(stdout, "%s: Final '%s%s%s'\n", __func__, "\033[1;31m", text_heard.c_str(), "\033[0m");
+
+                    // Send the line to server as final recognition.
+                    post_text(text_heard, params.url_final);
+
+                    // Reset the context of partially detected text.
                     last_text_partial = "";
                     vad_thold = params.vad_thold;
-                    post_text(text_partial, params.url_final);
+
+                    // Reset audio context, keeping audio buffer what has not been processed yet.
+                    int n_final = pcmf32_buff.size();
+                    audio.get(params.voice_ms, pcmf32_buff);
+                    audio.clear();
+                    int n_buff = pcmf32_buff.size();
+                    int n_copy = n_buff - n_final;
+                    if ((n_final < n_pcm_max) && (n_buff < n_pcm_max) && (n_copy > 0)) {
+                        pcmf32_prev.resize(n_copy);
+                        std::copy(pcmf32_buff.end() - n_copy, pcmf32_buff.end(), pcmf32_prev.begin());
+                        fprintf(stdout, "%s: Kept buffer of %d audio samples\n", __func__, n_copy);
+                    } else {
+                        pcmf32_prev.clear();
+                    }
+
                 } else {
+                    fprintf(stdout, "%s: Partial '%s%s%s'\n", __func__, "\033[1;34m", text_heard.c_str(), "\033[0m");
+
                     // Send the line to server as partial recognition.
-                    last_text_partial = text_partial;
-                    post_text(text_partial, params.url_partial);
+                    post_text(text_heard, params.url_partial);
+
+                    // Store the last partially detected text.
+                    last_text_partial = text_heard;
                 }
             }
         }
