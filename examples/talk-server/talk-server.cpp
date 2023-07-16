@@ -246,7 +246,75 @@ void print_vector_to_file(const std::string & filename, const std::vector<float>
 }
 
 
-int main(int argc, char ** argv) {
+static inline void clean_sentence(std::string & sentence) {
+    sentence = ::trim(sentence);
+    if (sentence.rfind("- ") == 0) {
+        sentence = sentence.substr(2, sentence.size() - 2);
+    }
+    sentence = ::trim(sentence);
+}
+
+
+static inline void add_sentence(std::string & sentence,
+                                std::vector<std::string> & sentences) {
+    clean_sentence(sentence);
+    if (sentence.size() > 0) { sentences.push_back(sentence); }
+}
+
+
+std::vector<std::string> split_current_partial(const std::string & text_heard,
+                                               std::string & text_carryover) {
+
+    // Replace all occurrences of "--" by "...".
+    std::string text = text_heard;
+    std::size_t found = text.find("--");
+    while (found != std::string::npos) {
+        text.replace(found, 2, "...");
+        found = text.find("--");
+    }
+
+    // Split text into sentences, keep unfinished sentence in text_carryover.
+    std::vector<std::string> sentences;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t finish = text.find_first_of(".!?", start);
+        if (finish != std::string::npos) {
+            // Search for next non punctuation.
+            finish = text.find_first_not_of(".?!", finish);
+            finish = (finish != std::string::npos) ? finish : text.size();
+            // Extract sentence.
+            sentences.push_back(text.substr(start, finish - start));
+            start = finish + 1;
+        } else {
+            if (start == 0) {
+                // No punctuation at all in text: consider it a single sentence.
+                sentences.push_back(text);
+            } else {
+                // Keep the unfinished last sentence as text_carryover.
+                text_carryover = text.substr(start, text.size() - start);
+            }
+            start = text.size();
+        }
+    }
+
+    // Split sentences by speakers ("- ") and clean up.
+    std::vector<std::string> sentences_final;
+    std::string sentence;
+    for (int k = 0; k < sentences.size(); k++) {
+        bool new_speaker = (sentences[k].rfind("- ") == 0);
+        if (new_speaker && (sentence.size() > 0)) {
+            add_sentence(sentence, sentences_final);
+            sentence.clear();
+        }
+        sentence += " " + sentences[k];
+    }
+    add_sentence(sentence, sentences_final);
+    clean_sentence(text_carryover);
+    return sentences_final;
+ }
+
+
+ int main(int argc, char ** argv) {
 
     // Parse parameters and print usage.
     whisper_params params;
@@ -299,6 +367,7 @@ int main(int argc, char ** argv) {
     std::vector<float> pcmf32_buff;
     std::vector<float> pcmf32_prev;
     std::string last_text_partial("");
+    std::string text_carryover("");
     float vad_thold = params.vad_thold;
 
     // Main loop.
@@ -337,8 +406,8 @@ int main(int argc, char ** argv) {
                     pcmf32_prev.clear();
                 }
                 if (pcmf32_prev.size() > 0) {
-                    fprintf(stdout, "%s: Prepending audio buffer of %d %d %d with previous %d samples.\n",
-                            __func__, (int)pcmf32_buff.size(), n_pcm_max, (pcmf32_buff.size() >= n_pcm_max), (int)pcmf32_prev.size());
+                    fprintf(stdout, "%s: Prepending audio buffer of %d with previous %d samples.\n",
+                            __func__, (int)pcmf32_buff.size(), (int)pcmf32_prev.size());
                     pcmf32_buff.insert(pcmf32_buff.begin(), pcmf32_prev.begin(), pcmf32_prev.end());
                 }
 
@@ -369,12 +438,21 @@ int main(int argc, char ** argv) {
                 detected_end = detected_end || (text_heard.size() > params.max_chars);
 
                 if (detected_end) {
-                    fprintf(stdout, "%s: Final '%s%s%s'\n", __func__, "\033[1;31m", text_heard.c_str(), "\033[0m");
+
+                    // Append the carry over to the final sentence.
+                    fprintf(stdout, "%s: Final %s%s...%s %s%s%s\n", __func__,
+                        "\033[1;32m", text_carryover.c_str(), "\033[0m",
+                        "\033[1;31m", text_heard.c_str(), "\033[0m");
+                    text_heard = text_carryover + "... " + text_heard;
 
                     // Send the line to server as final recognition.
-                    post_text(text_heard, params.url_final);
+                    text_carryover.clear();
+                    std::vector<std::string> sentences = split_current_partial(text_heard, text_carryover);
+                    for (int k = 0; k < sentences.size(); k++) {
+                        post_text(sentences[k], params.url_final);
+                    }
 
-                    // Reset the context of partially detected text.
+                    // Reset the last partially detected text.
                     last_text_partial = "";
                     vad_thold = params.vad_thold;
 
@@ -393,7 +471,7 @@ int main(int argc, char ** argv) {
                     }
 
                 } else {
-                    fprintf(stdout, "%s: Partial '%s%s%s'\n", __func__, "\033[1;34m", text_heard.c_str(), "\033[0m");
+                    fprintf(stdout, "%s: Partial: %s%s%s\n", __func__, "\033[1;34m", text_heard.c_str(), "\033[0m");
 
                     // Send the line to server as partial recognition.
                     post_text(text_heard, params.url_partial);
