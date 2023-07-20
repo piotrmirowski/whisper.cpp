@@ -439,11 +439,22 @@ std::vector<std::string> split_current_partial(const std::string & text_heard,
 
                 if (detected_end) {
 
+                    fprintf(stdout, "%s: Final ", __func__);
+
                     // Append the carry over to the final sentence.
-                    fprintf(stdout, "%s: Final %s%s...%s %s%s%s\n", __func__,
-                        "\033[1;32m", text_carryover.c_str(), "\033[0m",
-                        "\033[1;31m", text_heard.c_str(), "\033[0m");
-                    text_heard = text_carryover + "... " + text_heard;
+                    if (text_carryover.size() > 0) {
+                        if ((text_carryover.back() != '.') && (text_carryover.back() != ',') &&
+                            (text_carryover.back() != '?') && (text_carryover.back() != '!') &&
+                            (text_carryover.back() != '-')) {
+                            text_carryover += "...";
+                        }
+                        text_carryover += " ";
+                        fprintf(stdout, "%s%s%s", "\033[1;32m", text_carryover.c_str(), "\033[0m");
+                    }
+                    fprintf(stdout, "%s%s%s\n", "\033[1;31m", text_heard.c_str(), "\033[0m");
+                    if (text_carryover.size() > 0) {
+                        text_heard = text_carryover + text_heard;
+                    }
 
                     // Send the line to server as final recognition.
                     text_carryover.clear();
