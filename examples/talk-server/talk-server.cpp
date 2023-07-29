@@ -252,6 +252,9 @@ static inline void clean_sentence(std::string & sentence) {
         sentence = sentence.substr(2, sentence.size() - 2);
     }
     sentence = ::trim(sentence);
+    if (sentence.size() > 0) {
+        sentence[0] = toupper(sentence[0]);
+    }
 }
 
 
